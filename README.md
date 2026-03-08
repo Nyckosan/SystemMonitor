@@ -59,11 +59,6 @@ What it does:
 - Stops running monitor processes from the install directory
 - Removes the install directory
 
-### Notes
-
-- Do not pass `--install` and `--uninstall` together.
-- Both short and long forms are supported: `-install`/`--install`, `-uninstall`/`--uninstall`.
-
 ## Temperature note (important)
 
 Windows does not always expose CPU temp directly.
@@ -79,3 +74,4 @@ For best CPU temperature readings, run LibreHardwareMonitor in the background.
 ```powershell
 pythonw SystemMonitor.py
 ```
+
