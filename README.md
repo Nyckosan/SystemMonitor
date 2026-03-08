@@ -1,4 +1,4 @@
-# Laptop Taskbar Monitor (Windows)
+# SystemMonitor - CPU, RAM, Temp, FPS
 
 Small tray/taskbar monitor for:
 - CPU usage (%)
@@ -74,4 +74,5 @@ For best CPU temperature readings, run LibreHardwareMonitor in the background.
 ```powershell
 pythonw SystemMonitor.py
 ```
+
 
