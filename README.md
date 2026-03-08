@@ -28,6 +28,42 @@ pip install -r requirements.txt
 python SystemMonitor.py
 ```
 
+## 3) CLI options
+
+### `--install`
+
+Installs the app for all logons on this machine (requires running as Administrator).
+
+```powershell
+python SystemMonitor.py --install
+```
+
+What it does:
+- Copies the app to `C:\Program Files\SystemMonitor` (or `C:\Program Files (x86)\SystemMonitor` on 32-bit Python)
+- Creates/updates a local virtual environment and installs dependencies
+- Creates a startup scheduled task named `SystemMonitor` (run on logon)
+- Adds a startup Run key entry (`Laptop Monitor`)
+- Tries to start the monitor immediately after install
+
+### `--uninstall`
+
+Removes the installed app and startup registration (requires running as Administrator).
+
+```powershell
+python SystemMonitor.py --uninstall
+```
+
+What it does:
+- Stops and removes the scheduled task `SystemMonitor`
+- Removes the startup Run key entry (`Laptop Monitor`)
+- Stops running monitor processes from the install directory
+- Removes the install directory
+
+### Notes
+
+- Do not pass `--install` and `--uninstall` together.
+- Both short and long forms are supported: `-install`/`--install`, `-uninstall`/`--uninstall`.
+
 ## Temperature note (important)
 
 Windows does not always expose CPU temp directly.
@@ -43,4 +79,3 @@ For best CPU temperature readings, run LibreHardwareMonitor in the background.
 ```powershell
 pythonw SystemMonitor.py
 ```
-
