@@ -1,0 +1,13 @@
+{
+  "temp_unit": "C",
+  "refresh_seconds": 1,
+  "show_panel": true,
+  "font_color": "#22c55e",
+  "bg_color": "#111111",
+  "transparent_bg": true,
+  "font_family": "Segoe UI",
+  "show_cpu": true,
+  "show_ram": true,
+  "show_temp": true,
+  "show_fps": true
+}
