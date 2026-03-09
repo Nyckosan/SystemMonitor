@@ -7,7 +7,13 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-function Write-DebugLog([string]$m) { if ($Debug) { Write-Host "[DEBUG] $m" } }
+# Write a debug line only when -Debug was passed on the command line.
+function Write-DebugLog([string]$m) {
+    # Keep normal output clean unless troubleshooting is explicitly enabled.
+    if ($Debug) {
+        Write-Host "[DEBUG] $m"
+    }
+}
 
 function Get-FlagArgs {
     $a = @()
@@ -74,21 +80,26 @@ $script:BG_COLORS = [ordered]@{
 $script:FONT_FAMILIES = @('Segoe UI','Consolas','Arial')
 
 function Get-ScriptPath {
+    # When running from a script file, use that exact path.
     if ($PSCommandPath) { return (Resolve-Path $PSCommandPath).Path }
+    # Fallback for rare contexts where PSCommandPath is missing.
     return (Resolve-Path '.\SystemMonitor.ps1').Path
 }
 
 function Get-InstallDir {
+    # Match standard Windows install locations by OS architecture.
     if ([Environment]::Is64BitOperatingSystem) { return 'C:\Program Files\SystemMonitor' }
     return 'C:\Program Files (x86)\SystemMonitor'
 }
 
 function Get-ConfigPath([string]$baseDir = $null) {
+    # By default, config lives next to the currently running script.
     if (-not $baseDir) { $baseDir = Split-Path -Parent (Get-ScriptPath) }
     return Join-Path $baseDir $script:CONFIG_FILE_NAME
 }
 
 function New-DefaultState {
+    # Central default UI state used for first run and config recovery.
     return [ordered]@{
         temp_unit       = 'C'
         refresh_seconds = 2
@@ -137,17 +148,23 @@ function Save-State([hashtable]$state) {
 }
 
 function Convert-HtmlColor([string]$hex) {
+    # Convert CSS-style colors (#RRGGBB) to System.Drawing.Color.
     try { return [Drawing.ColorTranslator]::FromHtml($hex) }
+    # If conversion fails, return a safe visible fallback.
     catch { return [Drawing.Color]::White }
 }
 
 function Is-Admin {
+    # Resolve current Windows identity.
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+    # Wrap identity in principal to evaluate role membership.
     $p = [Security.Principal.WindowsPrincipal]::new($id)
+    # Return true when the process token has Administrator role.
     return $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
 function Get-LaunchCommand([string]$scriptPath) {
+    # Build one command string used by startup registration entries.
     return "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -STA -File `"$scriptPath`""
 }
 
@@ -158,10 +175,12 @@ function Enable-Startup([string]$scriptPath) {
 }
 
 function Disable-Startup {
+    # Remove Run key value; ignore if it does not exist.
     Remove-ItemProperty -Path $script:RUN_KEY_PATH -Name $script:APP_NAME -ErrorAction SilentlyContinue
 }
 
 function Get-StartupEnabled {
+    # Read and validate startup registration from HKCU Run key.
     try {
         $v = (Get-ItemProperty -Path $script:RUN_KEY_PATH -Name $script:APP_NAME -ErrorAction Stop).$($script:APP_NAME)
         return [bool]$v
@@ -169,6 +188,7 @@ function Get-StartupEnabled {
 }
 
 function Try-GetShortPath([string]$path) {
+    # Ask cmd.exe for 8.3 path to avoid quoting issues in legacy tools.
     try {
         $result = cmd /c "for %I in (\"$path\") do @echo %~sI"
         if ($LASTEXITCODE -eq 0 -and $result) {
@@ -217,6 +237,7 @@ function Register-LogonTask([string]$installScript) {
 }
 
 function Remove-LogonTask {
+    # Remove task with module APIs first; fallback to schtasks when needed.
     try {
         Stop-ScheduledTask -TaskName $script:SCHEDULED_TASK_NAME -ErrorAction SilentlyContinue | Out-Null
         Unregister-ScheduledTask -TaskName $script:SCHEDULED_TASK_NAME -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
@@ -227,6 +248,7 @@ function Remove-LogonTask {
 }
 
 function Ensure-Admin([string]$name) {
+    # Gate privileged actions behind an explicit admin check.
     if (Is-Admin) { return $true }
     Write-Host "[FAIL] $name requires Administrator privileges."
     return $false
@@ -282,6 +304,7 @@ function Install-App {
 }
 
 function Uninstall-App {
+    # Uninstall flow: remove startup hooks, then remove installed files.
     if (-not (Ensure-Admin 'Uninstall')) { return 1 }
     try {
         Remove-LogonTask
