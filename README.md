@@ -67,13 +67,28 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\SystemMonitor.ps1
 - Start With Windows
 - Quit
 
-## Python Version (Legacy)
+## Python Version
 
-The original Python version is still available in `SystemMonitor.py`.
+The Python version is available in `SystemMonitor.py`.
 
-Example run:
+### Run
+
 ```powershell
 python SystemMonitor.py
+```
+
+### Python CLI options
+
+- `--install`: install to Program Files, configure startup task/Run key, and start monitor (Administrator required)
+- `--uninstall`: remove installed files and startup registration (Administrator required)
+- `--debug`: enable debug logging
+
+Examples:
+
+```powershell
+python SystemMonitor.py --debug
+python SystemMonitor.py --install
+python SystemMonitor.py --uninstall
 ```
 
 ## Temperature Note
@@ -84,4 +99,6 @@ Windows does not always expose direct CPU package temp. The app tries:
 3. `root\\wmi` ACPI thermal zones
 
 For best CPU temperature readings, keep LibreHardwareMonitor running.
+
+
 
