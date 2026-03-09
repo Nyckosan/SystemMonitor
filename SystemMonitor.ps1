@@ -18,6 +18,7 @@ function Get-FlagArgs {
 }
 
 # Ensure WinForms runs in Windows PowerShell Desktop + STA for tray/panel reliability.
+# Relaunch in Windows PowerShell (Desktop) + STA because WinForms tray UI requires it.
 if (-not $env:SYSTEMMONITOR_RELAUNCHED) {
     $needDesktop = $PSVersionTable.PSEdition -ne 'Desktop'
     $needSta = [Threading.Thread]::CurrentThread.ApartmentState -ne 'STA'
@@ -97,6 +98,7 @@ function New-DefaultState {
     }
 }
 
+# Load persisted UI settings with validation and safe defaults for missing/invalid values.
 function Load-State {
     $state = New-DefaultState
     $path = Get-ConfigPath
@@ -118,6 +120,7 @@ function Load-State {
     return $state
 }
 
+# Persist current UI settings so tray/menu choices survive restarts.
 function Save-State([hashtable]$state) {
     try { $state | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Get-ConfigPath) -Encoding UTF8 }
     catch { Write-DebugLog "Save-State failed: $($_.Exception.Message)" }
@@ -165,6 +168,7 @@ function Try-GetShortPath([string]$path) {
     return $null
 }
 
+# Register startup task on user logon. Use ScheduledTasks first, then schtasks fallback.
 function Register-LogonTask([string]$installScript) {
     # Prefer ScheduledTasks cmdlets first, then fallback to schtasks.exe.
     $taskArgs = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -STA -File `"$installScript`""
@@ -213,6 +217,7 @@ function Ensure-Admin([string]$name) {
     return $false
 }
 
+# Install flow: copy script, seed config, register startup, and start monitor immediately.
 function Install-App {
     if (-not (Ensure-Admin 'Install')) { return 1 }
     $src = Get-ScriptPath
@@ -273,6 +278,7 @@ function Uninstall-App {
     }
 }
 
+# Temperature lookup priority: Libre/OpenHardwareMonitor sensors, then ACPI fallback.
 function Get-Temp {
     foreach ($ns in @('root/LibreHardwareMonitor','root/OpenHardwareMonitor')) {
         try {
@@ -299,6 +305,7 @@ function Get-Temp {
     return @{ value = $null; source = 'Unavailable' }
 }
 
+# Fast runtime sanity checks. CPU/RAM must work; temperature may be unavailable.
 function Run-StartupChecks {
     Write-Host "[$($script:APP_NAME)] Startup checks"
     Write-Host ("[{0}] Admin privileges: {1}" -f ($(if (Is-Admin) { 'OK' } else { 'WARN' }), $(if (Is-Admin) { 'Yes' } else { 'No' })))
@@ -327,6 +334,7 @@ function Run-StartupChecks {
     return $true
 }
 
+# Main tray app lifecycle: create UI, wire menu actions, poll metrics, and update panel.
 function Start-Monitor {
     $script:state = Load-State
     $script:tempSource = 'Initializing'
@@ -388,6 +396,7 @@ function Start-Monitor {
         Build-Menu
     }
 
+    # Rebuild context menu from current state so checks/toggles always stay in sync.
     function Build-Menu {
         $menu = [Windows.Forms.ContextMenuStrip]::new()
 
@@ -443,6 +452,7 @@ function Start-Monitor {
 
     $timer = [Windows.Forms.Timer]::new()
     $timer.Interval = [int]$script:state.refresh_seconds * 1000
+    # Poll system metrics and refresh tray/panel text on the configured interval.
     $timer.add_Tick({
         try { $cpu=[double]$cpuCounter.NextValue() } catch { $cpu=0 }
         try { $os=Get-CimInstance Win32_OperatingSystem; $ram=(1-([double]$os.FreePhysicalMemory/[double]$os.TotalVisibleMemorySize))*100 } catch { $ram=0 }
