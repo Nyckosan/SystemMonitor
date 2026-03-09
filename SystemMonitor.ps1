@@ -11,8 +11,11 @@ function Write-DebugLog([string]$m) { if ($Debug) { Write-Host "[DEBUG] $m" } }
 
 function Get-FlagArgs {
     $a = @()
+    # Preserve debug flag when we relaunch into Windows PowerShell.
     if ($Debug) { $a += '-Debug' }
+    # Preserve install mode across relaunch.
     if ($Install) { $a += '-Install' }
+    # Preserve uninstall mode across relaunch.
     if ($Uninstall) { $a += '-Uninstall' }
     return $a
 }
@@ -20,13 +23,16 @@ function Get-FlagArgs {
 # Ensure WinForms runs in Windows PowerShell Desktop + STA for tray/panel reliability.
 # Relaunch in Windows PowerShell (Desktop) + STA because WinForms tray UI requires it.
 if (-not $env:SYSTEMMONITOR_RELAUNCHED) {
+    # PowerShell 7 (Core) cannot host this WinForms tray flow reliably.
     $needDesktop = $PSVersionTable.PSEdition -ne 'Desktop'
+    # WinForms UI components require STA apartment threading.
     $needSta = [Threading.Thread]::CurrentThread.ApartmentState -ne 'STA'
     if ($needDesktop -or $needSta) {
         $winps = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
         if (Test-Path -LiteralPath $winps) {
             $self = if ($PSCommandPath) { $PSCommandPath } else { '.\SystemMonitor.ps1' }
             $args = @('-NoProfile','-ExecutionPolicy','Bypass','-STA','-File',$self) + (Get-FlagArgs)
+            # Relaunch and exit this process so only one UI instance is active.
             Start-Process -FilePath $winps -ArgumentList $args -WorkingDirectory (Get-Location) -Environment @{ SYSTEMMONITOR_RELAUNCHED = '1' }
             exit 0
         }
@@ -102,12 +108,16 @@ function New-DefaultState {
 function Load-State {
     $state = New-DefaultState
     $path = Get-ConfigPath
+    # No config yet: return defaults without erroring.
     if (-not (Test-Path -LiteralPath $path)) { return $state }
 
     try {
         $loaded = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+        # Validate enum-like values before applying persisted settings.
         if ($loaded.temp_unit -in @('C','F')) { $state.temp_unit = [string]$loaded.temp_unit }
+        # Keep refresh options constrained to supported tray menu values.
         if ($loaded.refresh_seconds -in @(1,2,5)) { $state.refresh_seconds = [int]$loaded.refresh_seconds }
+        # Apply only known boolean flags; ignore unknown keys silently.
         foreach ($k in @('show_panel','transparent_bg','show_cpu','show_ram','show_temp','show_fps')) {
             if ($null -ne $loaded.$k -and $loaded.$k -is [bool]) { $state[$k] = [bool]$loaded.$k }
         }
@@ -142,6 +152,7 @@ function Get-LaunchCommand([string]$scriptPath) {
 }
 
 function Enable-Startup([string]$scriptPath) {
+    # Store startup command in HKCU Run so it launches at sign-in.
     $cmd = Get-LaunchCommand $scriptPath
     New-ItemProperty -Path $script:RUN_KEY_PATH -Name $script:APP_NAME -PropertyType String -Value $cmd -Force | Out-Null
 }
@@ -182,19 +193,23 @@ function Register-LogonTask([string]$installScript) {
         $env:USERNAME
     ) | Where-Object { $_ } | Select-Object -Unique
 
+    # Different machines expose user principals differently; try common variants.
     foreach ($userId in $userCandidates) {
         try {
             $principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel Highest
+            # Force replaces existing task definition to keep updates idempotent.
             Register-ScheduledTask -TaskName $script:SCHEDULED_TASK_NAME -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
             return $true
         } catch { Write-DebugLog "Register-ScheduledTask failed for '$userId': $($_.Exception.Message)" }
     }
 
     try {
+        # Fallback path for older schtasks quoting quirks around spaces.
         $shortScript = Try-GetShortPath $installScript
         if (-not $shortScript) { $shortScript = $installScript }
         $scriptArg = if ($shortScript -match '\s') { "`"$shortScript`"" } else { $shortScript }
         $tr = "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -STA -File $scriptArg"
+        # Native schtasks fallback when ScheduledTasks module principal resolution fails.
         $proc = Start-Process -FilePath 'schtasks.exe' -ArgumentList @('/Create','/F','/SC','ONLOGON','/RL','HIGHEST','/TN',$script:SCHEDULED_TASK_NAME,'/TR',$tr) -Wait -PassThru -NoNewWindow
         if ($proc.ExitCode -eq 0) { return $true }
     } catch {}
@@ -229,10 +244,12 @@ function Install-App {
         Copy-Item -LiteralPath $src -Destination $dst -Force
 
         # Seed default settings so first run is visible and predictable.
+        # Write initial settings for installed instance so panel is visible immediately.
         $installState = New-DefaultState
         $installState.show_panel = $true
         $installState | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Get-ConfigPath $dir) -Encoding UTF8
 
+        # Startup task is required for the install contract; fail fast if missing.
         $taskCreated = Register-LogonTask $dst
         if (-not $taskCreated) { throw 'Scheduled task could not be created.' }
 
@@ -240,6 +257,7 @@ function Install-App {
 
         $startedNow = $false
         try {
+            # Prefer task launch path so runtime context matches startup behavior.
             Start-ScheduledTask -TaskName $script:SCHEDULED_TASK_NAME -ErrorAction Stop
             $startedNow = $true
         } catch {
@@ -247,6 +265,7 @@ function Install-App {
         }
 
         if (-not $startedNow) {
+            # Final fallback to ensure monitor starts now even if task start is blocked.
             Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-STA','-File',$dst) | Out-Null
             $startedNow = $true
         }
@@ -280,15 +299,18 @@ function Uninstall-App {
 
 # Temperature lookup priority: Libre/OpenHardwareMonitor sensors, then ACPI fallback.
 function Get-Temp {
+    # Query external hardware monitor namespaces first for better CPU package temps.
     foreach ($ns in @('root/LibreHardwareMonitor','root/OpenHardwareMonitor')) {
         try {
             $sensors = Get-CimInstance -Namespace $ns -ClassName Sensor -ErrorAction Stop | Where-Object { "$($_.SensorType)" -match 'Temp|Temperature' }
             $cpuTemps = @(); $anyTemps = @()
             foreach ($s in $sensors) {
                 $t = $null; try { $t = [double]$s.Value } catch { continue }
+                # Filter obvious sensor garbage values before display.
                 if ($t -lt -20 -or $t -gt 130) { continue }
                 $anyTemps += $t
                 $name = ("{0} {1}" -f $s.Name, $s.Identifier).ToLowerInvariant()
+                # Prefer CPU-like sensors over miscellaneous motherboard temps.
                 if ($name -match 'cpu|package|core') { $cpuTemps += $t }
             }
             if ($cpuTemps.Count -gt 0) { return @{ value = ($cpuTemps | Measure-Object -Maximum).Maximum; source = 'Libre/OpenHardwareMonitor' } }
@@ -297,6 +319,7 @@ function Get-Temp {
     }
 
     try {
+        # ACPI fallback is less precise but keeps feature functional when monitors are absent.
         $zones = Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature -ErrorAction Stop
         $vals = @($zones | ForEach-Object { if ($_.CurrentTemperature) { $c = ([double]$_.CurrentTemperature/10)-273.15; if ($c -ge -20 -and $c -le 130) { $c } } })
         if ($vals.Count -gt 0) { return @{ value = ($vals | Measure-Object -Maximum).Maximum; source = 'ACPI' } }
@@ -319,6 +342,7 @@ function Run-StartupChecks {
         return $false
     }
 
+    # RAM source fallback handles environments where Win32_OperatingSystem is restricted.
     $ramOk = $false
     try { Get-CimInstance Win32_OperatingSystem -ErrorAction Stop | Out-Null; $ramOk = $true }
     catch {
@@ -341,8 +365,10 @@ function Start-Monitor {
     $script:latestText = 'CPU --%   RAM --%   TEMP --'
     $script:latestFps = 0.0
 
+    # Keep one counter object alive; repeatedly constructing counters is expensive.
     $cpuCounter = [Diagnostics.PerformanceCounter]::new('Processor','% Processor Time','_Total')
     $null = $cpuCounter.NextValue()
+    # FPS here means update-loop frequency (1 / elapsed seconds per tick).
     $stopwatch = [Diagnostics.Stopwatch]::StartNew()
 
     $notify = [Windows.Forms.NotifyIcon]::new()
@@ -358,6 +384,7 @@ function Start-Monitor {
     $notify.Icon = [Drawing.Icon]::FromHandle($bmp.GetHicon())
     $g.Dispose(); $bmp.Dispose()
 
+    # Borderless always-on-top mini panel anchored near the taskbar corner.
     $panel = [Windows.Forms.Form]::new()
     $panel.FormBorderStyle = 'None'
     $panel.ShowInTaskbar = $false
@@ -373,6 +400,7 @@ function Start-Monitor {
     function Place-Panel([Windows.Forms.Form]$f) {
         $w = [Windows.Forms.Screen]::PrimaryScreen.WorkingArea
         $f.PerformLayout()
+        # Reposition after every text/style change to keep alignment stable.
         $f.Location = [Drawing.Point]::new($w.Right - $f.Width - 18, $w.Bottom - $f.Height - 18)
     }
 
@@ -405,6 +433,7 @@ function Start-Monitor {
         $menu.Items.Add($src) | Out-Null
         $menu.Items.Add('-') | Out-Null
 
+        # Menu is recreated from current state so checkmarks always match live values.
         $display = [Windows.Forms.ToolStripMenuItem]::new('Display Metrics')
         $mCpu=[Windows.Forms.ToolStripMenuItem]::new('Show CPU'); $mCpu.Checked=[bool]$script:state.show_cpu; $mCpu.add_Click({$script:state.show_cpu=-not [bool]$script:state.show_cpu; Persist-And-RefreshMenu}); $display.DropDownItems.Add($mCpu)|Out-Null
         $mRam=[Windows.Forms.ToolStripMenuItem]::new('Show RAM'); $mRam.Checked=[bool]$script:state.show_ram; $mRam.add_Click({$script:state.show_ram=-not [bool]$script:state.show_ram; Persist-And-RefreshMenu}); $display.DropDownItems.Add($mRam)|Out-Null
@@ -436,6 +465,7 @@ function Start-Monitor {
         $trans=[Windows.Forms.ToolStripMenuItem]::new('Transparent Background'); $trans.Checked=[bool]$script:state.transparent_bg; $trans.add_Click({$script:state.transparent_bg=-not [bool]$script:state.transparent_bg; Apply-PanelStyle; Persist-And-RefreshMenu}); $menu.Items.Add($trans)|Out-Null
         $showPanel=[Windows.Forms.ToolStripMenuItem]::new('Show Mini Panel'); $showPanel.Checked=[bool]$script:state.show_panel; $showPanel.add_Click({$script:state.show_panel=-not [bool]$script:state.show_panel; if($script:state.show_panel){$panel.Show()}else{$panel.Hide()}; Persist-And-RefreshMenu}); $menu.Items.Add($showPanel)|Out-Null
 
+        # Startup toggle mirrors registry state and updates immediately.
         $startup=[Windows.Forms.ToolStripMenuItem]::new('Start With Windows'); $startup.Checked=Get-StartupEnabled; $startup.add_Click({ if(Get-StartupEnabled){Disable-Startup}else{Enable-Startup (Get-ScriptPath)}; Build-Menu }); $menu.Items.Add($startup)|Out-Null
 
         $menu.Items.Add('-')|Out-Null
@@ -457,7 +487,9 @@ function Start-Monitor {
         try { $cpu=[double]$cpuCounter.NextValue() } catch { $cpu=0 }
         try { $os=Get-CimInstance Win32_OperatingSystem; $ram=(1-([double]$os.FreePhysicalMemory/[double]$os.TotalVisibleMemorySize))*100 } catch { $ram=0 }
 
+        # Capture current temperature and source each tick for both display and menu label.
         $tmp = Get-Temp
+        # Rebuild menu only when source changes to avoid unnecessary object churn.
         $sourceChanged = $script:tempSource -ne $tmp.source
         $script:tempSource = $tmp.source
         if ($null -eq $tmp.value) { $tempTip='Temp: N/A'; $tempPanel='TEMP N/A' }
@@ -466,6 +498,7 @@ function Start-Monitor {
             else { $tempTip=('Temp: {0:N1} C' -f $tmp.value); $tempPanel=('TEMP {0:N1}C' -f $tmp.value) }
         }
 
+        # Guard against divide-by-zero on fast intervals.
         $script:latestFps = 1.0 / [Math]::Max(0.0001,$stopwatch.Elapsed.TotalSeconds)
         $stopwatch.Restart()
 
@@ -489,6 +522,7 @@ function Start-Monitor {
         $panel.ClientSize = $label.PreferredSize
         Apply-PanelStyle
 
+        # Respect panel visibility setting while keeping placement current.
         if($script:state.show_panel){ if(-not $panel.Visible){$panel.Show()}; Place-Panel $panel }
         else { if($panel.Visible){$panel.Hide()} }
 
